@@ -1,0 +1,150 @@
+path="E:/MR/LoanPrediction"
+setwd(path)
+
+library(caret)
+train=read.csv("train_u6lujuX_CVtuZ9i.csv",stringsAsFactors = T)
+test=read.csv("test_Y3wMUE5_7gLdaTN.csv",stringsAsFactors=T)
+	
+#Imputing missing values using KNN.Also centering and scaling numerical columns
+preProcValues=preProcess(train,method=c("knnImpute","center","scale"))
+
+library(RANN)
+train_processed=predict(preProcValues,train)
+sum(is.na(train_processed))
+
+#convet outcome varialbe to numerical
+train_processed$Loan_Status=ifelse(train_processed$Loan_Status=="N",0,1)
+
+id=train_processed$Loan_ID
+train_processed$Loan_ID=NULL
+
+#creating dummy variables using one hot encoding
+#converting every categorical variable to numerical using dummy variables
+dmy=dummyVars("~.",data=train_processed,fullRank=T)
+train_transformed=data.frame(predict(dmy,newdata=train_processed))
+str(train_transformed)
+
+#converting dependent variable back to catergorical
+train_transformed$Loan_Status=as.factor(train_transformed$Loan_Status)
+
+#Splitting data
+#splitting training set into two parts based on outcome: 75% and 25%
+index=createDataPartition(train_transformed$Loan_Status,p=0.75,list=FALSE)
+trainSet=train_transformed[index,]
+testSet=train_transformed[-index,]
+str(trainSet)
+
+#feature selection using rfe in caret
+control=rfeControl(functions=rfFuncs,method="repeatedcv",repeats=3,verbose=FALSE)
+outcomeName='Loan_Status'
+predictors=names(testSet)[!names(trainSet)%in% outcomeName]
+Loan_Pred_Profile=rfe(trainSet[,predictors],trainSet[,outcomeName],rfeControl=control)
+Loan_Pred_Profile
+
+#taking only top 5 predictors 
+predictors=c("Credit_History","LoanAmount","Loan_Amount_Term","ApplicantIncome","CoapplicantIncome")
+
+#training models
+model_gbm=train(trainSet[,predictors],trainSet[,outcomeName],method="gbm")
+model_rf=train(trainSet[,predictors],trainSet[,outcomeName],method="rf")
+model_nnett=train(trainSet[,predictors],trainSet[,outcomeName],method="nnet")
+model_glm=train(trainSet[,predictors],trainSet[,outcomeName],method="glm")
+
+#Parameter tuning using Caret
+#five fold cross validation repeated 5 times
+fitControl=trainControl(method="repeatedcv",number=5,repeats=5)
+modelLookup(model='gbm')
+
+#creating grid
+grid=expand.grid(n.trees=c(10,20,50,100,500,1000),shrinkage=c(0.01,0.05,0.1,0.5),n.minobsinnode=c(3,5,10),interaction.depth=c(1,5,10))
+#training the model
+model_gbm=train(trainSet[,predictors],trainSet[,outcomeName],method="gbm",trControl=fitControl,tuneGrid=grid)
+
+#summarize the model
+print(model_gbm)
+plot(model_gbm)
+
+#using tune length
+model_gbm=train(trainSet[,predictors],trainSet[,outcomeName],method="gbm",trControl=fitControl,tuneLength=10)
+print(model_gbm)
+plot(model_gbm)
+
+#variable importance estimation for gbm
+varImp(object=model_gbm)
+#plotting variable importance
+plot(varImp(object=model_gbm),main="Gbm-variable importance")
+
+#variable importance estimation for rf
+varImp(object=model_rf)
+plot(varImp(object=model_rf),main="rf-variable importance")
+
+#Checking variable importance for NNET
+varImp(object=model_nnet)
+
+#Checking variable importance for glm
+varImp(object=model_glm)
+
+#PREDICTIONS using Caret
+predictions=predict.train(object=model_gbm,testSet[,predictors],type="raw")
+table(predictions)
+
+confusionMatrix(predictions,testSet[,outcomeName])
+
+
+##############################################
+
+#test
+preProcValues=preProcess(test,method=c("knnImpute","center","scale"))
+test_processed=predict(preProcValues,test)
+sum(is.na(test_processed))
+id.test=test_processed$Loan_ID
+test_processed$Loan_ID=NULL
+
+dmy=dummyVars("~.",data=test_processed,fullRank=T)
+test_transformed=data.frame(predict(dmy,newdata=test_processed))
+str(test_transformed)
+test_transformed$Married.No=ifelse(test_transformed$Married.Yes==1,0,1)
+
+#gbm
+control=rfeControl(functions=rfFuncs,method="repeatedcv",repeats=3,verbose=FALSE)
+outcomeName="Loan_Status"
+predictors=names(train_transformed)[!names(train_transformed)%in% outcomeName]
+Loan_Pred_Profile=rfe(train_transformed[,predictors],train_transformed[,outcomeName],rfe=control)
+Loan_Pred_Profile
+predictors=c("Credit_History","ApplicantIncome","LoanAmount","Property_Area.Semiurban","CoapplicantIncome")
+
+model.gbm=train(train_transformed[,predictors],train_transformed[,outcomeName],method="gbm")
+fitControl=trainControl(method="repeatedcv",number=5,repeats=5)
+model.gbm=train(train_transformed[,predictors],train_transformed[,outcomeName],method="gbm",trControl=fitControl,tuneLength=10)
+print(model.gbm)
+plot(model.gbm)
+varImp(object=model.gbm)
+#grid
+grid=expand.grid(n.trees=c(10,20,50,100,500,1000),shrinkage=c(0.01,0.05,0.1,0.5),n.minobsinnode=c(3,5,10),interaction.depth=c(1,5,10))
+#training the model
+model_gbm=train(train_transformed[,predictors],train_transformed[,outcomeName],method="gbm",trControl=fitControl,tuneGrid=grid)
+
+
+predictions=predict.train(object=model.gbm,test_transformed[,predictors],type="raw")
+pred.gbm=rep("N",367)
+pred.gbm[predictions==1]="Y"
+df=data.frame(Loan_ID=test$Loan_ID,Loan_Status=pred.gbm)
+write.csv(df,"caretgbm.csv",row.names=F)
+
+#rf
+model.rf=train(train_transformed[,predictors],train_transformed[,outcomeName],method="rf",trControl=fitControl,tuneLength=10)
+varImp(model.rf)
+predictions=predict.train(object=model.rf,test_transformed[,predictors],type="raw")
+pred.rf=rep("N",367)
+pred.rf[predictions==1]="Y"
+df=data.frame(Loan_ID=test$Loan_ID,Loan_Status=pred.rf)
+write.csv(df,"caretrf.csv",row.names=F)
+
+#nnet
+model.nnet=train(train_transformed[,predictors],train_transformed[,outcomeName],method="nnet",trControl=fitControl,tuneLength=10)
+varImp(model.nnet)
+predictions=predict.train(object=model.nnet,test_transformed[,predictors],type="raw")
+pred.nnet=rep("N",367)
+pred.nnet[predictions==1]="Y"
+df=data.frame(Loan_ID=test$Loan_ID,Loan_Status=pred.nnet)
+write.csv(df,"caretnnet.csv",row.names=F)
